@@ -16,8 +16,10 @@ FTP_USER = "apimo-auto-fab"
 def connect_ftp(host, user, password):
     try:
         ftp = ftplib.FTP_TLS(host, timeout=60)
-        ftp.sendcmd('USER ' + user)
-        ftp.sendcmd('PASS ' + password)
+        # On utilise la méthode standard login() au lieu de sendcmd()
+        ftp.login(user, password)
+        # LA LIGNE MAGIQUE : Sécurise le canal de données (indispensable pour nlst, retrbinary...)
+        ftp.prot_p() 
         return ftp
     except ftplib.all_errors as e:
         st.error(f"La connexion FTP a échoué : {e}")
