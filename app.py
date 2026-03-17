@@ -7,29 +7,18 @@ import traceback
 import pandas as pd # Import conservé pour compatibilité future
 
 # --- CONFIGURATION ET NUMÉRO DE VERSION ---
-APP_VERSION = "v1.10.2" # Correction bug variable 'display_name' dans Modifier
+APP_VERSION = "v1.10.3" # Connexion originale + Suppression de la commande nlst()
 FTP_HOST = "ftp.figarocms.fr"
 FTP_USER = "apimo-auto-fab"
 
 # --- FONCTIONS TECHNIQUES FTP ---
 
 def connect_ftp(host, user, password):
+    # RETOUR À LA FONCTION ORIGINALE
     try:
-        # 1. On reprend EXACTEMENT votre méthode d'origine
         ftp = ftplib.FTP_TLS(host, timeout=60)
         ftp.sendcmd('USER ' + user)
         ftp.sendcmd('PASS ' + password)
-        
-        # 2. LE CORRECTIF ANTI-ERREUR 504 : On interdit à Python d'utiliser la commande EPSV
-        ftp.sendepsv = False
-        
-        # 3. LE CORRECTIF ANTI-ERREUR 111 : On force la bonne IP publique (ftp.figarocms.fr)
-        original_makepasv = ftp.makepasv
-        def patched_makepasv():
-            _, port = original_makepasv() # Le serveur nous donne le port
-            return host, port             # On écrase l'IP locale par la bonne adresse
-        ftp.makepasv = patched_makepasv
-        
         return ftp
     except ftplib.all_errors as e:
         st.error(f"La connexion FTP a échoué : {e}")
@@ -98,7 +87,6 @@ def ajouter_client(ftp, agency_id, site, contact_mode, add_to_global=True, add_t
         st.error("Site non valide."); return
 
     agency_id_str = str(agency_id)
-    # Hash codé en dur comme demandé
     new_line_record = f"{agency_id_str},{login},df93c3658a012b239ff59ccee0536f592d0c54b7,agency,{contact_mode}"
     path_global, path_split = "All", "/"
 
@@ -127,23 +115,25 @@ def ajouter_client(ftp, agency_id, site, contact_mode, add_to_global=True, add_t
     else:
         st.info(f"Le client est déjà présent dans le fichier Global ({global_file}). Ajout ignoré.")
 
-    # 2. Ajout Split (Load Balancing)
+    # 2. Ajout Split (Load Balancing) - MODIFIÉ POUR CONTOURNER NLST()
     if add_to_split:
         st.write(f"Analyse des fichiers scindés ({prefix}...) pour le site '{site}'...")
         ftp.cwd(path_split)
-        nlst = ftp.nlst()
+        
         line_counts = {}
         already_exists_in_split = False
         found_in_file = ""
         
-        # Scan préventif anti-doublon
+        # Scan préventif anti-doublon via lecture directe
         for i in indices:
             filename = f"{prefix}{i}.csv"
-            if filename in nlst:
-                content_in_memory = io.BytesIO()
+            content_in_memory = io.BytesIO()
+            try:
+                # On essaie de lire le fichier directement
                 ftp.retrbinary(f'RETR {filename}', content_in_memory.write)
                 content_str = content_in_memory.getvalue().decode('utf-8', errors='ignore')
                 lines = [line for line in content_str.splitlines() if line.strip()]
+                
                 for line in lines:
                     if line.startswith(agency_id_str + ','):
                         already_exists_in_split = True
@@ -151,7 +141,10 @@ def ajouter_client(ftp, agency_id, site, contact_mode, add_to_global=True, add_t
                         break
                 if already_exists_in_split: break
                 line_counts[filename] = len(lines)
-            else: line_counts[filename] = 0
+                
+            except ftplib.error_perm:
+                # Si le fichier n'existe pas, l'erreur est normale, on le compte à 0
+                line_counts[filename] = 0
 
         if already_exists_in_split:
             st.warning(f"⚠️ Action annulée pour les fichiers scindés : L'ID {agency_id} a été trouvé dans **{found_in_file}**.")
@@ -231,9 +224,6 @@ def modifier_client(ftp, agency_id, site, new_contact_mode):
     if not found_and_modified: st.warning(f"L'ID d'agence {agency_id_str} n'a pas été trouvé pour modification dans les fichiers du site '{site}'.")
 
 def verifier_parametrage_ftp(ftp, agency_id, site_choice):
-    """
-    Vérification standard sur le FTP.
-    """
     st.info(f"Recherche de l'ID d'agence '{agency_id}' sur le FTP...")
     
     results_figaro = check_id_for_site(ftp, agency_id, 'figaro')
@@ -246,14 +236,12 @@ def verifier_parametrage_ftp(ftp, agency_id, site_choice):
             mode_text = "Email Agence (0)" if mode == '0' else "Email Négociateur (1)" if mode == '1' else f"Valeur inconnue ({mode})"
             st.write(f"- Dans **{file_path}** avec le mode : **{mode_text}**")
         
-        # Vérification de cohérence
         if site_choice == 'Figaro Immobilier' or site_choice == 'Les deux':
             check_coherence(results_figaro, "Figaro Immobilier")
         if site_choice == 'Propriétés Le Figaro' or site_choice == 'Les deux':
             check_coherence(results_proprietes, "Propriétés Le Figaro")
     else:
         st.info(f"L'ID d'agence '{agency_id}' n'a été trouvé dans aucun fichier CSV.")
-
 
 # --- INTERFACE UTILISATEUR ---
 st.title("Outil de gestion des flux Apimo")
@@ -269,7 +257,6 @@ with col2:
     site_choice = st.radio("Site(s) :", ('Figaro Immobilier', 'Propriétés Le Figaro', 'Les deux'))
     contact_mode_options = {'Email Agence (0)': 0, 'Email Négociateur (1)': 1}
     
-    # Le mode de contact ne sert que pour l'ajout/modif
     if action == 'Ajouter' or action == 'Modifier le mode de contact':
         contact_mode = st.selectbox("Mode de contact :", options=list(contact_mode_options.keys()))
     else:
@@ -321,7 +308,6 @@ if st.button("Exécuter"):
 
                     elif action == 'Modifier le mode de contact':
                         for site_code in sites_to_process:
-                            # CORRECTION ICI : On définit display_name avant de l'utiliser
                             display_name = site_display_names.get(site_code, site_code.upper())
                             st.subheader(f"Modification : {display_name}")
                             modifier_client(ftp, agency_id, site_code, contact_mode_options[contact_mode])
