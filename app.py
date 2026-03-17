@@ -15,27 +15,25 @@ FTP_USER = "apimo-auto-fab"
 
 def connect_ftp(host, user, password):
     try:
+        # 1. On reprend EXACTEMENT votre méthode d'origine pour éviter l'erreur 504
         ftp = ftplib.FTP_TLS(timeout=60)
         ftp.connect(host)
+        ftp.sendcmd('USER ' + user)
+        ftp.sendcmd('PASS ' + password)
         
-        # 1. On s'authentifie SANS forcer le chiffrement des données 
-        # (secure=False évite l'erreur 504 "Command not implemented")
-        ftp.login(user, password, secure=False)
-        
-        # 2. On active le mode passif
+        # 2. Mode passif activé par précaution
         ftp.set_pasv(True)
         
-        # 3. LE CORRECTIF ANTI-CONNEXION REFUSÉE (Erreur 111) :
-        # On force Python à utiliser la vraie adresse du serveur (ftp.figarocms.fr) 
-        # au lieu de l'adresse interne que le serveur renvoie parfois par erreur.
+        # 3. LE PATCH ANTI-ERREUR 111 (Connection Refused sur nlst)
+        # On force Python à ignorer l'IP interne du serveur et à utiliser ftp.figarocms.fr
         original_makepasv = ftp.makepasv
         def patched_makepasv():
-            _, port = original_makepasv() # On récupère juste le port
-            return host, port             # On injecte manuellement le bon "host"
+            _, port = original_makepasv() # On garde le port ouvert par le serveur
+            return host, port             # Mais on force la bonne adresse IP publique
         ftp.makepasv = patched_makepasv
         
         return ftp
-    except Exception as e:
+    except ftplib.all_errors as e:
         st.error(f"La connexion FTP a échoué : {e}")
         return None
 
